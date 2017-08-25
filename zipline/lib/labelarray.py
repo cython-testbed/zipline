@@ -24,6 +24,7 @@ from zipline.utils.numpy_utils import (
     bool_dtype,
     unsigned_int_dtype_with_size_in_bytes,
     is_object,
+    object_dtype,
 )
 from zipline.utils.pandas_utils import ignore_pandas_nan_categorical_warning
 
@@ -142,7 +143,7 @@ class LabelArray(ndarray):
 
     @preprocess(
         values=coerce(list, partial(np.asarray, dtype=object)),
-        categories=coerce(np.ndarray, list),
+        categories=coerce((np.ndarray, set), list),
     )
     @expect_types(
         values=np.ndarray,
@@ -362,18 +363,17 @@ class LabelArray(ndarray):
     def __setitem__(self, indexer, value):
         self_categories = self.categories
 
-        if isinstance(value, LabelArray):
+        if isinstance(value, self.SUPPORTED_SCALAR_TYPES):
+            value_code = self.reverse_categories.get(value, None)
+            if value_code is None:
+                raise ValueError("%r is not in LabelArray categories." % value)
+            self.as_int_array()[indexer] = value_code
+        elif isinstance(value, LabelArray):
             value_categories = value.categories
             if compare_arrays(self_categories, value_categories):
                 return super(LabelArray, self).__setitem__(indexer, value)
             else:
                 raise CategoryMismatch(self_categories, value_categories)
-
-        elif isinstance(value, self.SUPPORTED_SCALAR_TYPES):
-            value_code = self.reverse_categories.get(value, -1)
-            if value_code < 0:
-                raise ValueError("%r is not in LabelArray categories." % value)
-            self.as_int_array()[indexer] = value_code
         else:
             raise NotImplementedError(
                 "Setting into a LabelArray with a value of "
@@ -381,6 +381,30 @@ class LabelArray(ndarray):
                     type=type(value).__name__,
                 ),
             )
+
+    def set_scalar(self, indexer, value):
+        """
+        Set scalar value into the array.
+
+        Parameters
+        ----------
+        indexer : any
+            The indexer to set the value at.
+        value : str
+            The value to assign at the given locations.
+
+        Raises
+        ------
+        ValueError
+            Raised when ``value`` is not a value element of this this label
+            array.
+        """
+        try:
+            value_code = self.reverse_categories[value]
+        except KeyError:
+            raise ValueError("%r is not in LabelArray categories." % value)
+
+        self.as_int_array()[indexer] = value_code
 
     def __setslice__(self, i, j, sequence):
         """
@@ -475,9 +499,46 @@ class LabelArray(ndarray):
             kwargs['type'] = type
         return super(LabelArray, self).view(**kwargs)
 
+    def astype(self,
+               dtype,
+               order='K',
+               casting='unsafe',
+               subok=True,
+               copy=True):
+        if dtype == self.dtype:
+            if not subok:
+                array = self.view(type=np.ndarray)
+            else:
+                array = self
+
+            if copy:
+                return array.copy()
+            return array
+
+        if dtype == object_dtype:
+            return self.as_string_array()
+
+        if dtype.kind == 'S':
+            return self.as_string_array().astype(
+                dtype,
+                order=order,
+                casting=casting,
+                subok=subok,
+                copy=copy,
+            )
+
+        raise TypeError(
+            '%s can only be converted into object, string, or void,'
+            ' got: %r' % (
+                type(self).__name__,
+                dtype,
+            ),
+        )
+
     # In general, we support resizing, slicing, and reshaping methods, but not
     # numeric methods.
     SUPPORTED_NDARRAY_METHODS = frozenset([
+        'astype',
         'base',
         'compress',
         'copy',

@@ -307,9 +307,10 @@ class TradingAlgorithm(object):
         # Initialize Pipeline API data.
         self.init_engine(kwargs.pop('get_pipeline_loader', None))
         self._pipelines = {}
-        # Create an always-expired cache so that we compute the first time data
-        # is requested.
-        self._pipeline_cache = CachedObject(None, pd.Timestamp(0, tz='UTC'))
+
+        # Create an already-expired cache so that we compute the first time
+        # data is requested.
+        self._pipeline_cache = CachedObject.expired()
 
         self.blotter = kwargs.pop('blotter', None)
         self.cancel_policy = kwargs.pop('cancel_policy', NeverCancel())
@@ -458,11 +459,6 @@ class TradingAlgorithm(object):
         if self._handle_data:
             self._handle_data(self, data)
 
-        # Unlike trading controls which remain constant unless placing an
-        # order, account controls can change each bar. Thus, must check
-        # every bar no matter if the algorithm places an order or not.
-        self.validate_account_controls()
-
     def analyze(self, perf):
         if self._analyze is None:
             return
@@ -569,7 +565,7 @@ class TradingAlgorithm(object):
             self.perf_tracker = PerformanceTracker(
                 sim_params=self.sim_params,
                 trading_calendar=self.trading_calendar,
-                env=self.trading_environment,
+                asset_finder=self.asset_finder,
             )
 
             # Set the dt initially to the period start by forcing it to change.

@@ -496,6 +496,11 @@ class SimplePipelineEngine(PipelineEngine):
                 loaded = loader.load_adjusted_array(
                     to_load, mask_dates, assets, mask,
                 )
+                assert set(loaded) == set(to_load), (
+                    'loader did not return an AdjustedArray for each column\n'
+                    'expected: %r\n'
+                    'got:      %r' % (sorted(to_load), sorted(loaded))
+                )
                 workspace.update(loaded)
             else:
                 workspace[term] = term._compute(

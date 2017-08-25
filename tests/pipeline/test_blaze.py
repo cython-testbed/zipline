@@ -85,13 +85,15 @@ class BlazeToPipelineTestCase(WithAssetFinder, ZiplineTestCase):
     def init_class_fixtures(cls):
         super(BlazeToPipelineTestCase, cls).init_class_fixtures()
         cls.dates = dates = pd.date_range('2014-01-01', '2014-01-03')
-        dates = cls.dates.repeat(3)
+        cls.asof_dates = asof_dates = dates - pd.Timedelta(days=1)
+        cls.timestamps = timestamps = dates - pd.Timedelta(hours=1)
+
         cls.df = df = pd.DataFrame({
             'sid': cls.ASSET_FINDER_EQUITY_SIDS * 3,
             'value': (0., 1., 2., 1., 2., 3., 2., 3., 4.),
             'int_value': (0, 1, 2, 1, 2, 3, 2, 3, 4),
-            'asof_date': dates,
-            'timestamp': dates,
+            'asof_date': asof_dates.repeat(3),
+            'timestamp': timestamps.repeat(3),
         })
         cls.dshape = dshape("""
         var * {
@@ -231,20 +233,21 @@ class BlazeToPipelineTestCase(WithAssetFinder, ZiplineTestCase):
 
         loader = BlazeLoader()
 
-        from_blaze(
+        ds = from_blaze(
             expr,
             loader=loader,
             no_deltas_rule='ignore',
             no_checkpoints_rule='ignore',
         )
 
-        self.assertEqual(len(loader), 1)
-        exprdata, = loader.values()
+        self.assertEqual(len(loader), 2)  # added the two columns
+        for column in ds.columns:
+            exprdata = loader[column]
 
-        assert_isidentical(
-            exprdata.expr,
-            bz.transform(expr, timestamp=expr.asof_date),
-        )
+            assert_isidentical(
+                exprdata.expr,
+                bz.transform(expr, timestamp=expr.asof_date),
+            )
 
     def test_from_blaze_no_resources_dataset_expr(self):
         expr = bz.symbol('expr', self.dshape)
@@ -339,19 +342,20 @@ class BlazeToPipelineTestCase(WithAssetFinder, ZiplineTestCase):
             no_deltas_rule=select_level(deltas),
             no_checkpoints_rule=select_level(checkpoints),
         )
-        self.assertEqual(len(loader), 1)
-        exprdata = loader[ds]
-        self.assertTrue(exprdata.expr.isidentical(expr.ds))
-        if deltas:
-            self.assertTrue(exprdata.deltas.isidentical(expr.ds_deltas))
-        else:
-            self.assertIsNone(exprdata.deltas)
-        if checkpoints:
-            self.assertTrue(
-                exprdata.checkpoints.isidentical(expr.ds_checkpoints),
-            )
-        else:
-            self.assertIsNone(exprdata.checkpoints)
+        self.assertEqual(len(loader), 3)  # added the three columns
+        for column in ds.columns:
+            exprdata = loader[column]
+            self.assertTrue(exprdata.expr.isidentical(expr.ds))
+            if deltas:
+                self.assertTrue(exprdata.deltas.isidentical(expr.ds_deltas))
+            else:
+                self.assertIsNone(exprdata.deltas)
+            if checkpoints:
+                self.assertTrue(
+                    exprdata.checkpoints.isidentical(expr.ds_checkpoints),
+                )
+            else:
+                self.assertIsNone(exprdata.checkpoints)
 
     @parameter_space(deltas={True, False}, checkpoints={True, False})
     def test_auto_metadata_fail_warn(self, deltas, checkpoints):
@@ -582,20 +586,25 @@ class BlazeToPipelineTestCase(WithAssetFinder, ZiplineTestCase):
                    Equity(66 [B]) 2011-01-02
                    Equity(67 [C]) 2011-01-03
         """
-        dates = (self.dates[0], self.dates[-1], self.dates[0], self.dates[1])
+        dates = pd.Index([
+            self.dates[0],
+            self.dates[-1],
+            self.dates[0],
+            self.dates[1],
+        ])
         df = pd.DataFrame({
             'sid': self.ASSET_FINDER_EQUITY_SIDS[:-1] +
-            (self.ASSET_FINDER_EQUITY_SIDS[-1],)*2,
+            (self.ASSET_FINDER_EQUITY_SIDS[-1],) * 2,
             'float_value': (0., 1., 2., np.NaN),
-            'str_value': ("a", "b", "c", None),
+            'str_value': ('a', 'b', 'c', None),
             'int_value': (1, 2, 3, 0),
             'bool_value': (True, True, True, False),
             'dt_value': (pd.Timestamp('2011-01-01'),
                          pd.Timestamp('2011-01-02'),
                          pd.Timestamp('2011-01-03'),
                          pd.NaT),
-            'asof_date': dates,
-            'timestamp': dates,
+            'asof_date': dates - pd.Timedelta(days=2),
+            'timestamp': dates - pd.Timedelta(days=1),
         })
 
         expr = bz.data(
@@ -614,64 +623,47 @@ class BlazeToPipelineTestCase(WithAssetFinder, ZiplineTestCase):
         )
         fields = OrderedDict(expr.dshape.measure.fields)
 
-        expected = pd.DataFrame({
-            "str_value": np.array(["a",
-                                   None,
-                                   "c",
-                                   "a",
-                                   None,
-                                   "c",
-                                   "a",
-                                   "b",
-                                   "c"],
-                                  dtype='object'),
-            "float_value": np.array([0,
-                                     np.NaN,
-                                     2,
-                                     0,
-                                     np.NaN,
-                                     2,
-                                     0,
-                                     1,
-                                     2],
-                                    dtype='float64'),
-            "int_value": np.array([1,
-                                   0,
-                                   3,
-                                   1,
-                                   0,
-                                   0,
-                                   1,
-                                   2,
-                                   0],
-                                  dtype='int64'),
-            "bool_value": np.array([True,
-                                    False,
-                                    True,
-                                    True,
-                                    False,
-                                    False,
-                                    True,
-                                    True,
-                                    False],
-                                   dtype='bool'),
-            "dt_value": [pd.Timestamp('2011-01-01'),
-                         pd.NaT,
-                         pd.Timestamp('2011-01-03'),
-                         pd.Timestamp('2011-01-01'),
-                         pd.NaT,
-                         pd.Timestamp('2011-01-03'),
-                         pd.Timestamp('2011-01-01'),
-                         pd.Timestamp('2011-01-02'),
-                         pd.Timestamp('2011-01-03')],
-        },
-            columns=['str_value', 'float_value', 'int_value', 'bool_value',
-                     'dt_value'],
-            index=pd.MultiIndex.from_product(
-                (self.dates, self.asset_finder.retrieve_all(
-                    self.ASSET_FINDER_EQUITY_SIDS
-                ))
-            )
+        expected = pd.DataFrame(
+            {
+                'str_value': np.array(
+                    ['a', None, 'c', 'a', None, 'c', 'a', 'b', 'c'],
+                    dtype='object',
+                ),
+                'float_value': np.array(
+                    [0, np.NaN, 2, 0, np.NaN, 2, 0, 1, 2],
+                    dtype='float64',
+                ),
+                'int_value': np.array(
+                    [1, 0, 3, 1, 0, 3, 1, 2, 3],
+                    dtype='int64',
+                ),
+                'bool_value': np.array(
+                    [True, False, True, True, False, False, True, True, False],
+                    dtype='bool',
+                ),
+                'dt_value': [
+                    pd.Timestamp('2011-01-01'),
+                    pd.NaT,
+                    pd.Timestamp('2011-01-03'),
+                    pd.Timestamp('2011-01-01'),
+                    pd.NaT,
+                    pd.Timestamp('2011-01-03'),
+                    pd.Timestamp('2011-01-01'),
+                    pd.Timestamp('2011-01-02'),
+                    pd.Timestamp('2011-01-03'),
+                ],
+            },
+            columns=[
+                'str_value',
+                'float_value',
+                'int_value',
+                'bool_value',
+                'dt_value',
+            ],
+            index=pd.MultiIndex.from_product((
+                self.dates,
+                self.asset_finder.retrieve_all(self.ASSET_FINDER_EQUITY_SIDS),
+            )),
         )
 
         self._test_id(
@@ -679,8 +671,7 @@ class BlazeToPipelineTestCase(WithAssetFinder, ZiplineTestCase):
             var * Record(fields),
             expected,
             self.asset_finder,
-            ('float_value', 'str_value', 'int_value', 'bool_value',
-             'dt_value'),
+            expected.columns,
         )
 
     def test_complex_expr(self):
@@ -806,7 +797,7 @@ class BlazeToPipelineTestCase(WithAssetFinder, ZiplineTestCase):
                 e = expected.loc[today]
                 for i, input_ in enumerate(inputs):
                     # Each macro input should only have one column.
-                    assert input_.shape == (self.window_length, 1)
+                    assert_equal(input_.shape, (self.window_length, 1))
                     assert_equal(input_[0, 0], e[i])
 
         # Run the pipeline with our custom factor. Assertions about the
@@ -817,6 +808,31 @@ class BlazeToPipelineTestCase(WithAssetFinder, ZiplineTestCase):
         engine.run_pipeline(p, dates[0], dates[-1])
 
     def test_custom_query_time_tz(self):
+        """
+        input (df):
+           asof_date  int_value  sid           timestamp  value
+        0 2013-12-31          0   65 2014-01-01 13:44:00    0.0
+        1 2013-12-31          1   66 2014-01-01 13:44:00    1.0
+        2 2013-12-31          2   67 2014-01-01 13:44:00    2.0
+        3 2013-12-31          1   65 2014-01-01 13:45:00    1.0
+        4 2013-12-31          2   66 2014-01-01 13:45:00    2.0
+        5 2013-12-31          3   67 2014-01-01 13:45:00    3.0
+        6 2014-01-02          2   65 2014-01-03 13:44:00    2.0
+        7 2014-01-02          3   66 2014-01-03 13:44:00    3.0
+        8 2014-01-02          4   67 2014-01-03 13:44:00    4.0
+
+        output (expected):
+                                                  int_value  value
+        2014-01-01 00:00:00+00:00 Equity(65 [A])          0    0.0
+                                  Equity(66 [B])          1    1.0
+                                  Equity(67 [C])          2    2.0
+        2014-01-02 00:00:00+00:00 Equity(65 [A])          1    1.0
+                                  Equity(66 [B])          2    2.0
+                                  Equity(67 [C])          3    3.0
+        2014-01-03 00:00:00+00:00 Equity(65 [A])          2    2.0
+                                  Equity(66 [B])          3    3.0
+                                  Equity(67 [C])          4    4.0
+        """
         df = self.df.copy()
         df['timestamp'] = (
             pd.DatetimeIndex(df['timestamp'], tz='EST') +
@@ -881,15 +897,16 @@ class BlazeToPipelineTestCase(WithAssetFinder, ZiplineTestCase):
                    Equity(66 [B])         3     3
                    Equity(67 [C])         4     4
         """
-        expected = self.df.drop('asof_date', axis=1).set_index(
-            ['timestamp', 'sid'],
-        )
+        expected = self.df.drop(['timestamp', 'asof_date', 'sid'], axis=1)
         expected.index = pd.MultiIndex.from_product((
-            expected.index.levels[0],
-            self.asset_finder.retrieve_all(expected.index.levels[1]),
+            self.dates,
+            self.asset_finder.retrieve_all(self.asset_finder.sids),
         ))
         self._test_id(
-            self.df, self.dshape, expected, self.asset_finder,
+            self.df,
+            self.dshape,
+            expected,
+            self.asset_finder,
             ('int_value', 'value',)
         )
 
@@ -919,15 +936,19 @@ class BlazeToPipelineTestCase(WithAssetFinder, ZiplineTestCase):
                    Equity(66 [B])  2014-01-03
                    Equity(67 [C])  2014-01-03
         """
-        expected = self.df.drop(['value', 'int_value'], axis=1).set_index(
-            ['timestamp', 'sid'],
+        expected = self.df.drop(
+            ['timestamp', 'sid', 'value', 'int_value'],
+            axis=1,
         )
         expected.index = pd.MultiIndex.from_product((
-            expected.index.levels[0],
-            self.asset_finder.retrieve_all(expected.index.levels[1]),
+            self.dates,
+            self.asset_finder.retrieve_all(self.asset_finder.sids),
         ))
         self._test_id(
-            self.df, self.dshape, expected, self.asset_finder,
+            self.df,
+            self.dshape,
+            expected,
+            self.asset_finder,
             ('asof_date',)
         )
 
@@ -1024,12 +1045,11 @@ class BlazeToPipelineTestCase(WithAssetFinder, ZiplineTestCase):
         df['other'] = df.value + 1
         fields = OrderedDict(self.dshape.measure.fields)
         fields['other'] = fields['value']
-        expected = df.drop('asof_date', axis=1).set_index(
-            ['timestamp', 'sid'],
-        ).sort_index(axis=1)
+
+        expected = df.drop(['timestamp', 'asof_date', 'sid'], axis=1)
         expected.index = pd.MultiIndex.from_product((
-            expected.index.levels[0],
-            self.asset_finder.retrieve_all(expected.index.levels[1]),
+            self.dates,
+            self.asset_finder.retrieve_all(self.asset_finder.sids),
         ))
         self._test_id(
             df,
@@ -1148,24 +1168,24 @@ class BlazeToPipelineTestCase(WithAssetFinder, ZiplineTestCase):
         df = pd.DataFrame(
             columns=['asof_date',        'timestamp', 'sid', 'other', 'value'],
             data=[
-                [T('2014-01-01'), T('2014-01-01 00'),    65,        0,      0],
-                [T('2014-01-01'), T('2014-01-01 01'),    65,        1, np.nan],
-                [T('2014-01-01'), T('2014-01-01 00'),    66,   np.nan, np.nan],
-                [T('2014-01-01'), T('2014-01-01 01'),    66,   np.nan,      1],
-                [T('2014-01-01'), T('2014-01-01 00'),    67,        2, np.nan],
-                [T('2014-01-01'), T('2014-01-01 01'),    67,   np.nan, np.nan],
-                [T('2014-01-02'), T('2014-01-02 00'),    65,   np.nan, np.nan],
-                [T('2014-01-02'), T('2014-01-02 01'),    65,   np.nan,      1],
-                [T('2014-01-02'), T('2014-01-02 00'),    66,   np.nan, np.nan],
-                [T('2014-01-02'), T('2014-01-02 01'),    66,        2, np.nan],
-                [T('2014-01-02'), T('2014-01-02 00'),    67,        3,      3],
-                [T('2014-01-02'), T('2014-01-02 01'),    67,        3,      3],
-                [T('2014-01-03'), T('2014-01-03 00'),    65,        2, np.nan],
-                [T('2014-01-03'), T('2014-01-03 01'),    65,        2, np.nan],
-                [T('2014-01-03'), T('2014-01-03 00'),    66,        3,      3],
-                [T('2014-01-03'), T('2014-01-03 01'),    66,   np.nan, np.nan],
-                [T('2014-01-03'), T('2014-01-03 00'),    67,   np.nan, np.nan],
-                [T('2014-01-03'), T('2014-01-03 01'),    67,   np.nan,      4],
+                [T('2013-12-31'), T('2013-12-31 22'),    65,        0,      0],
+                [T('2013-12-31'), T('2013-12-31 23'),    65,        1, np.nan],
+                [T('2013-12-31'), T('2013-12-31 22'),    66,   np.nan, np.nan],
+                [T('2013-12-31'), T('2013-12-31 23'),    66,   np.nan,      1],
+                [T('2013-12-31'), T('2013-12-31 22'),    67,        2, np.nan],
+                [T('2013-12-31'), T('2013-12-31 23'),    67,   np.nan, np.nan],
+                [T('2014-01-01'), T('2014-01-01 22'),    65,   np.nan, np.nan],
+                [T('2014-01-01'), T('2014-01-01 23'),    65,   np.nan,      1],
+                [T('2014-01-01'), T('2014-01-01 22'),    66,   np.nan, np.nan],
+                [T('2014-01-01'), T('2014-01-01 23'),    66,        2, np.nan],
+                [T('2014-01-01'), T('2014-01-01 22'),    67,        3,      3],
+                [T('2014-01-01'), T('2014-01-01 23'),    67,        3,      3],
+                [T('2014-01-02'), T('2014-01-02 22'),    65,        2, np.nan],
+                [T('2014-01-02'), T('2014-01-02 23'),    65,        2, np.nan],
+                [T('2014-01-02'), T('2014-01-02 22'),    66,        3,      3],
+                [T('2014-01-02'), T('2014-01-02 23'),    66,   np.nan, np.nan],
+                [T('2014-01-02'), T('2014-01-02 22'),    67,   np.nan, np.nan],
+                [T('2014-01-02'), T('2014-01-02 23'),    67,   np.nan,      4],
             ],
         )
         fields = OrderedDict(self.dshape.measure.fields)
@@ -1182,7 +1202,7 @@ class BlazeToPipelineTestCase(WithAssetFinder, ZiplineTestCase):
                 [3,           3],             # Equity(67 [C])
                 [2,           1],  # 2014-01-03 Equity(65 [A])
                 [3,           3],             # Equity(66 [B])
-                [3,           3],             # Equity(67 [C])
+                [3,           4],             # Equity(67 [C])
             ],
             index=pd.MultiIndex.from_product(
                 (self.dates, self.asset_finder.retrieve_all(
@@ -1203,29 +1223,29 @@ class BlazeToPipelineTestCase(WithAssetFinder, ZiplineTestCase):
         output (expected):
 
                     other  value
-        2014-01-01    NaN      1
-        2014-01-02      1      2
-        2014-01-03      2      2
+        2014-01-01    NaN      2
+        2014-01-02      1      3
+        2014-01-03      2      3
          """
         T = pd.Timestamp
         df = pd.DataFrame(
             columns=['asof_date',        'timestamp', 'other', 'value'],
             data=[
-                [T('2014-01-01'), T('2014-01-01 00'),   np.nan,      1],
-                [T('2014-01-01'), T('2014-01-01 01'),   np.nan, np.nan],
-                [T('2014-01-02'), T('2014-01-02 00'),        1, np.nan],
-                [T('2014-01-02'), T('2014-01-02 01'),   np.nan,      2],
-                [T('2014-01-03'), T('2014-01-03 00'),        2, np.nan],
-                [T('2014-01-03'), T('2014-01-03 01'),        3,      3],
+                [T('2013-12-31'), T('2013-12-31 01'),   np.nan,      1],
+                [T('2013-12-31'), T('2013-12-31 02'),   np.nan,      2],
+                [T('2014-01-01'), T('2014-01-01 01'),        1, np.nan],
+                [T('2014-01-01'), T('2014-01-01 02'),   np.nan,      3],
+                [T('2014-01-02'), T('2014-01-02 01'),        2, np.nan],
+                [T('2014-01-02'), T('2014-01-02 02'),   np.nan, np.nan],
             ],
         )
         fields = OrderedDict(self.macro_dshape.measure.fields)
         fields['other'] = fields['value']
 
         expected = pd.DataFrame(
-            data=[[np.nan, 1],   # 2014-01-01
-                  [1,      2],   # 2014-01-02
-                  [2,      2]],  # 2014-01-03
+            data=[[np.nan, 2],   # 2014-01-01
+                  [1,      3],   # 2014-01-02
+                  [2,      3]],  # 2014-01-03
             columns=['other', 'value'],
             index=self.dates,
         )
@@ -1248,14 +1268,12 @@ class BlazeToPipelineTestCase(WithAssetFinder, ZiplineTestCase):
                       start,
                       end,
                       window_length,
-                      compute_fn,
-                      apply_deltas_adjustments=True):
+                      compute_fn):
         loader = BlazeLoader()
         ds = from_blaze(
             expr,
             deltas,
             checkpoints,
-            apply_deltas_adjustments=apply_deltas_adjustments,
             loader=loader,
             no_deltas_rule='raise',
             no_checkpoints_rule='ignore',
@@ -1297,8 +1315,8 @@ class BlazeToPipelineTestCase(WithAssetFinder, ZiplineTestCase):
         df = self.df.copy()
         if add_extra_sid:
             extra_sid_df = pd.DataFrame({
-                'asof_date': self.dates,
-                'timestamp': self.dates,
+                'asof_date': self.asof_dates,
+                'timestamp': self.timestamps,
                 'sid': (ord('E'),) * 3,
                 'value': (3., 4., 5.,),
                 'int_value': (3, 4, 5),
@@ -1318,6 +1336,7 @@ class BlazeToPipelineTestCase(WithAssetFinder, ZiplineTestCase):
             name='delta',
             dshape=self.dshape,
         )
+
         expected_views = keymap(pd.Timestamp, {
             '2014-01-02': np.array([[10.0, 11.0, 12.0],
                                     [1.0, 2.0, 3.0]]),
@@ -1363,11 +1382,12 @@ class BlazeToPipelineTestCase(WithAssetFinder, ZiplineTestCase):
         expr = bz.data(self.df, name='expr', dshape=self.dshape)
         deltas = pd.DataFrame({
             'sid': [65, 66],
-            'asof_date': [self.dates[1], self.dates[0]],
-            'timestamp': [self.dates[2], self.dates[1]],
+            'asof_date': [self.asof_dates[1], self.asof_dates[0]],
+            'timestamp': [self.timestamps[2], self.timestamps[1]],
             'value': [10, 11],
         })
         deltas = bz.data(deltas, name='deltas', dshape=self.dshape)
+
         expected_views = keymap(pd.Timestamp, {
             '2014-01-02': np.array([[0.0, 11.0, 2.0],
                                     [1.0, 2.0, 3.0]]),
@@ -1459,8 +1479,8 @@ class BlazeToPipelineTestCase(WithAssetFinder, ZiplineTestCase):
     @with_extra_sid
     def test_novel_deltas(self, asset_info):
         base_dates = pd.DatetimeIndex([
-            pd.Timestamp('2014-01-01'),
-            pd.Timestamp('2014-01-04')
+            pd.Timestamp('2013-12-31'),
+            pd.Timestamp('2014-01-03')
         ])
         repeated_dates = base_dates.repeat(3)
         baseline = pd.DataFrame({
@@ -1468,7 +1488,7 @@ class BlazeToPipelineTestCase(WithAssetFinder, ZiplineTestCase):
             'value': (0., 1., 2., 1., 2., 3.),
             'int_value': (0, 1, 2, 1, 2, 3),
             'asof_date': repeated_dates,
-            'timestamp': repeated_dates,
+            'timestamp': repeated_dates + pd.Timedelta(hours=23),
         })
         expr = bz.data(baseline, name='expr', dshape=self.dshape)
         deltas = bz.data(
@@ -1483,7 +1503,7 @@ class BlazeToPipelineTestCase(WithAssetFinder, ZiplineTestCase):
             name='delta',
             dshape=self.dshape,
         )
-        expected_views_all_deltas = keymap(pd.Timestamp, {
+        expected_views = keymap(pd.Timestamp, {
             '2014-01-03': np.array([[10.0, 11.0, 12.0],
                                     [10.0, 11.0, 12.0],
                                     [10.0, 11.0, 12.0]]),
@@ -1491,47 +1511,30 @@ class BlazeToPipelineTestCase(WithAssetFinder, ZiplineTestCase):
                                     [10.0, 11.0, 12.0],
                                     [11.0, 12.0, 13.0]]),
         })
-        # The only novel delta is on 2014-01-05, because it modifies a
-        # baseline data point that occurred on 2014-01-04, which is on a
-        # Saturday. The other delta, occurring on 2014-01-02, is seen after
-        # we already see the baseline data it modifies, and so it is a
-        # non-novel delta. Thus, the only delta seen in the expected view for
-        # novel deltas is on 2014-01-06 at (2, 0), (2, 1), and (2, 2).
-        expected_views_novel_deltas = keymap(pd.Timestamp, {
-            '2014-01-03': np.array([[0.0, 1.0, 2.0],
-                                    [0.0, 1.0, 2.0],
-                                    [0.0, 1.0, 2.0]]),
-            '2014-01-06': np.array([[0.0, 1.0, 2.0],
-                                    [0.0, 1.0, 2.0],
-                                    [11.0, 12.0, 13.0]]),
-        })
-
-        def get_fourth_asset_view(expected_views, window_length):
-            return valmap(
-                lambda view: np.c_[view, [np.nan] * window_length],
-                expected_views,
-            )
 
         if len(asset_info) == 4:
-            expected_views_all_deltas = get_fourth_asset_view(
-                expected_views_all_deltas, window_length=3
+            def get_fourth_asset_view(expected_views, window_length):
+                return valmap(
+                    lambda view: np.c_[view, [np.nan] * window_length],
+                    expected_views,
+                )
+
+            expected_views = get_fourth_asset_view(
+                expected_views,
+                window_length=3,
             )
-            expected_views_novel_deltas = get_fourth_asset_view(
-                expected_views_novel_deltas, window_length=3
-            )
-            expected_output_buffer_all_deltas = [
-                10, 11, 12, np.nan, 11, 12, 13, np.nan
-            ]
-            expected_output_buffer_novel_deltas = [
-                0, 1, 2, np.nan, 11, 12, 13, np.nan
+            expected_output_buffer = [
+                10,
+                11,
+                12,
+                np.nan,
+                11,
+                12,
+                13,
+                np.nan,
             ]
         else:
-            expected_output_buffer_all_deltas = [
-                10, 11, 12, 11, 12, 13
-            ]
-            expected_output_buffer_novel_deltas = [
-                0, 1, 2, 11, 12, 13
-            ]
+            expected_output_buffer = [10, 11, 12, 11, 12, 13]
 
         cal = pd.DatetimeIndex([
             pd.Timestamp('2014-01-01'),
@@ -1542,60 +1545,38 @@ class BlazeToPipelineTestCase(WithAssetFinder, ZiplineTestCase):
         ])
 
         with tmp_asset_finder(equities=asset_info) as finder:
-            expected_output_all_deltas = pd.DataFrame(
-                expected_output_buffer_all_deltas,
+            expected_output = pd.DataFrame(
+                expected_output_buffer,
                 index=pd.MultiIndex.from_product((
-                    sorted(expected_views_all_deltas.keys()),
-                    finder.retrieve_all(asset_info.index),
-                )),
-                columns=('value',),
-            )
-            expected_output_novel_deltas = pd.DataFrame(
-                expected_output_buffer_novel_deltas,
-                index=pd.MultiIndex.from_product((
-                    sorted(expected_views_novel_deltas.keys()),
+                    sorted(expected_views.keys()),
                     finder.retrieve_all(asset_info.index),
                 )),
                 columns=('value',),
             )
 
-            it = (
-                (
-                    True,
-                    expected_views_all_deltas,
-                    expected_output_all_deltas
-                ),
-                (
-                    False,
-                    expected_views_novel_deltas,
-                    expected_output_novel_deltas
-                )
+            self._run_pipeline(
+                expr,
+                deltas,
+                None,
+                expected_views,
+                expected_output,
+                finder,
+                calendar=cal,
+                start=cal[2],
+                end=cal[-1],
+                window_length=3,
+                compute_fn=op.itemgetter(-1),
             )
-            for apply_deltas_adjs, expected_views, expected_output in it:
-                self._run_pipeline(
-                    expr,
-                    deltas,
-                    None,
-                    expected_views,
-                    expected_output,
-                    finder,
-                    calendar=cal,
-                    start=cal[2],
-                    end=cal[-1],
-                    window_length=3,
-                    compute_fn=op.itemgetter(-1),
-                    apply_deltas_adjustments=apply_deltas_adjs,
-                )
 
     def test_novel_deltas_macro(self):
         base_dates = pd.DatetimeIndex([
-            pd.Timestamp('2014-01-01'),
-            pd.Timestamp('2014-01-04')
+            pd.Timestamp('2013-12-31'),
+            pd.Timestamp('2014-01-03')
         ])
         baseline = pd.DataFrame({
             'value': (0., 1.),
             'asof_date': base_dates,
-            'timestamp': base_dates,
+            'timestamp': base_dates + pd.Timedelta(days=1),
         })
         expr = bz.data(baseline, name='expr', dshape=self.macro_dshape)
         deltas = bz.data(baseline, name='deltas', dshape=self.macro_dshape)
@@ -1605,26 +1586,12 @@ class BlazeToPipelineTestCase(WithAssetFinder, ZiplineTestCase):
             timestamp=deltas.timestamp + timedelta(days=1),
         )
         nassets = len(simple_asset_info)
-        expected_views_all_deltas = keymap(pd.Timestamp, {
+        expected_views = keymap(pd.Timestamp, {
             '2014-01-03': np.array([[10.0],
                                     [10.0],
                                     [10.0]]),
             '2014-01-06': np.array([[10.0],
                                     [10.0],
-                                    [11.0]]),
-        })
-        # The only novel delta is on 2014-01-05, because it modifies a
-        # baseline data point that occurred on 2014-01-04, which is on a
-        # Saturday. The other delta, occurring on 2014-01-02, is seen after
-        # we already see the baseline data it modifies, and so it is a
-        # non-novel delta. Thus, the only delta seen in the expected view for
-        # novel deltas is on 2014-01-06 at (2, 0).
-        expected_views_novel_deltas = keymap(pd.Timestamp, {
-            '2014-01-03': np.array([[0.0],
-                                    [0.0],
-                                    [0.0]]),
-            '2014-01-06': np.array([[0.0],
-                                    [0.0],
                                     [11.0]]),
         })
 
@@ -1644,44 +1611,26 @@ class BlazeToPipelineTestCase(WithAssetFinder, ZiplineTestCase):
                      finder.retrieve_all(asset_info.index),)
                 ), columns=('value',),
             )
+
         with tmp_asset_finder(equities=simple_asset_info) as finder:
-            expected_output_all_deltas = get_expected_output(
-                expected_views_all_deltas,
+            expected_output = get_expected_output(
+                expected_views,
                 [10, 11],
                 simple_asset_info,
             )
-            expected_output_novel_deltas = get_expected_output(
-                expected_views_novel_deltas,
-                [0, 11],
-                simple_asset_info,
+            self._run_pipeline(
+                expr,
+                deltas,
+                None,
+                expected_views,
+                expected_output,
+                finder,
+                calendar=cal,
+                start=cal[2],
+                end=cal[-1],
+                window_length=3,
+                compute_fn=op.itemgetter(-1),
             )
-            it = (
-                (
-                    True,
-                    expected_views_all_deltas,
-                    expected_output_all_deltas
-                ),
-                (
-                    False,
-                    expected_views_novel_deltas,
-                    expected_output_novel_deltas
-                )
-            )
-            for apply_deltas_adjs, expected_views, expected_output in it:
-                self._run_pipeline(
-                    expr,
-                    deltas,
-                    None,
-                    expected_views,
-                    expected_output,
-                    finder,
-                    calendar=cal,
-                    start=cal[2],
-                    end=cal[-1],
-                    window_length=3,
-                    compute_fn=op.itemgetter(-1),
-                    apply_deltas_adjustments=apply_deltas_adjs,
-                )
 
     def _test_checkpoints_macro(self, checkpoints, ffilled_value=-1.0):
         """Simple checkpoints test that accepts a checkpoints dataframe and
@@ -1697,11 +1646,16 @@ class BlazeToPipelineTestCase(WithAssetFinder, ZiplineTestCase):
             The value to be read on the third, if not provided, it will be the
             value in the base data that will be naturally ffilled there.
         """
-        dates = pd.Timestamp('2014-01-01'), pd.Timestamp('2014-01-04')
+        dates = pd.Index([
+            pd.Timestamp('2014-01-01'),
+            pd.Timestamp('2014-01-04'),
+        ])
+        asof_dates = dates - pd.Timedelta(days=1)
+        timestamps = asof_dates + pd.Timedelta(hours=23)
         baseline = pd.DataFrame({
             'value': [-1.0, 1.0],
-            'asof_date': dates,
-            'timestamp': dates,
+            'asof_date': asof_dates,
+            'timestamp': timestamps,
         })
 
         nassets = len(simple_asset_info)
@@ -1762,11 +1716,11 @@ class BlazeToPipelineTestCase(WithAssetFinder, ZiplineTestCase):
     def test_checkpoints_out_of_bounds_macro(self):
         # provide two checkpoints, one before the data in the base table
         # and one after, these should not affect the value on the third
-        dates = pd.to_datetime(['2013-12-31', '2014-01-05'])
+        asof_dates = pd.to_datetime(['2013-12-30', '2014-01-04'])
         checkpoints = pd.DataFrame({
             'value': [-2, 2],
-            'asof_date': dates,
-            'timestamp': dates,
+            'asof_date': asof_dates,
+            'timestamp': asof_dates + pd.Timedelta(hours=23),
         })
 
         self._test_checkpoints_macro(checkpoints)
@@ -1787,15 +1741,20 @@ class BlazeToPipelineTestCase(WithAssetFinder, ZiplineTestCase):
         """
         nassets = len(simple_asset_info)
 
-        dates = pd.to_datetime(['2014-01-01', '2014-01-04'])
-        dates_repeated = np.tile(dates, nassets)
+        dates = pd.to_datetime(['2013-12-31', '2014-01-04'])
+
+        asof_dates = dates - pd.Timedelta(days=1)
+        asof_dates_repeated = np.tile(asof_dates, nassets)
+        timestamps = asof_dates + pd.Timedelta(hours=23)
+        timestamps_repeated = np.tile(timestamps, nassets)
+
         values = np.arange(nassets) + 1
         values = np.hstack((values[::-1], values))
         baseline = pd.DataFrame({
             'sid': np.tile(simple_asset_info.index, 2),
             'value': values,
-            'asof_date': dates_repeated,
-            'timestamp': dates_repeated,
+            'asof_date': asof_dates_repeated,
+            'timestamp': timestamps_repeated,
         })
 
         if ffilled_values is None:
@@ -1839,12 +1798,12 @@ class BlazeToPipelineTestCase(WithAssetFinder, ZiplineTestCase):
     def test_checkpoints(self):
         nassets = len(simple_asset_info)
         ffilled_values = (np.arange(nassets, dtype=np.float64) + 1) * 10
-        dates = [pd.Timestamp('2014-01-02')] * nassets
+        dates = pd.Index([pd.Timestamp('2014-01-01')] * nassets)
         checkpoints = pd.DataFrame({
             'sid': simple_asset_info.index,
             'value': ffilled_values,
             'asof_date': dates,
-            'timestamp': dates,
+            'timestamp': dates + pd.Timedelta(days=1),
         })
 
         self._test_checkpoints(checkpoints, ffilled_values)
@@ -1863,15 +1822,15 @@ class BlazeToPipelineTestCase(WithAssetFinder, ZiplineTestCase):
         nassets = len(simple_asset_info)
         # provide two sets of checkpoints, one before the data in the base
         # table and one after, these should not affect the value on the third
-        dates = pd.to_datetime(['2013-12-31', '2014-01-05'])
-        dates_repeated = np.tile(dates, nassets)
+        asof_dates = pd.to_datetime(['2013-12-30', '2014-01-04'])
+        asof_dates_repeated = np.tile(asof_dates, nassets)
         ffilled_values = (np.arange(nassets) + 2) * 10
         ffilled_values = np.hstack((ffilled_values[::-1], ffilled_values))
         checkpoints = pd.DataFrame({
             'sid': np.tile(simple_asset_info.index, 2),
             'value': ffilled_values,
-            'asof_date': dates_repeated,
-            'timestamp': dates_repeated,
+            'asof_date': asof_dates_repeated,
+            'timestamp': asof_dates_repeated + pd.Timedelta(hours=23),
         })
 
         self._test_checkpoints(checkpoints)
@@ -1952,12 +1911,8 @@ class MiscTestCase(ZiplineTestCase):
                 odo_kwargs={'a': 'b'},
             )),
             "ExprData(expr='expr', deltas='deltas',"
-            " checkpoints='checkpoints', odo_kwargs={'a': 'b'}, "
-            "apply_deltas_adjustments=True)",
+            " checkpoints='checkpoints', odo_kwargs={'a': 'b'})",
         )
-
-    def test_blaze_loader_repr(self):
-        assert_equal(repr(BlazeLoader()), '<BlazeLoader: {}>')
 
     def test_blaze_loader_lookup_failure(self):
         class D(DataSet):
