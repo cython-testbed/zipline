@@ -173,6 +173,7 @@ cdef _array_for_column_impl(object dtype,
                             np.ndarray[column_type, ndim=2] out_array,
                             Py_ssize_t size,
                             np.ndarray[np.int64_t] ts_ixs,
+                            np.ndarray[np.int64_t] asof_dates,
                             np.ndarray[np.int64_t] asof_ixs,
                             np.ndarray[np.int64_t] sids,
                             dict column_ixs,
@@ -258,6 +259,13 @@ cdef _array_for_column_impl(object dtype,
     cdef list non_null_ts_ixs_by_column_ix = [
         set() for _ in range(out_array.shape[1])
     ]
+
+    cdef np.ndarray[np.int64_t, ndim=2] most_recent_asof_date_for_ix = np.full(
+        (<object> out_array).shape,
+        pd.Timestamp.min.value,
+        dtype='int64',
+    )
+
     cdef dict adjustments
 
     cdef Py_ssize_t out_of_bounds_ix = len(out_array)
@@ -303,6 +311,21 @@ cdef _array_for_column_impl(object dtype,
             continue
 
         column_ix = <object> column_ix_ob  # cast to np.int64_t
+
+        with cython.boundscheck(False), cython.wraparound(False):
+            asof_date = asof_dates[n]
+            if asof_date >= most_recent_asof_date_for_ix[asof_ix, column_ix]:
+                # The asof_date is the same or more recent than the
+                # last recorded asof_date at the given index and we should
+                # treat this value as the best known row. We use >=
+                # because a more recent row with the same asof_date
+                # should be treated as an adjustment and the new value
+                # becomes the best-known.
+                most_recent_asof_date_for_ix[asof_ix, column_ix] = asof_date
+            else:
+                # The asof_date is earlier than the asof_date written
+                # at the given index. Ignore this row.
+                continue
 
         if AsArrayKind is AsAdjustedArray:
             # Grab the list of adjustments for this timestamp. If this is the
@@ -430,6 +453,7 @@ cdef array_for_column(object dtype,
                       tuple out_shape,
                       Py_ssize_t size,
                       np.ndarray[np.int64_t] ts_ixs,
+                      np.ndarray[np.int64_t] asof_dates,
                       np.ndarray[np.int64_t] asof_ixs,
                       np.ndarray[np.int64_t] sids,
                       dict sid_column_ixs,
@@ -450,6 +474,7 @@ cdef array_for_column(object dtype,
             out_array,
             size,
             ts_ixs,
+            asof_dates,
             asof_ixs,
             sids,
             sid_column_ixs,
@@ -465,6 +490,7 @@ cdef array_for_column(object dtype,
             out_array.view('int64'),
             size,
             ts_ixs,
+            asof_dates,
             asof_ixs,
             sids,
             sid_column_ixs,
@@ -480,6 +506,7 @@ cdef array_for_column(object dtype,
             out_array,
             size,
             ts_ixs,
+            asof_dates,
             asof_ixs,
             sids,
             sid_column_ixs,
@@ -496,6 +523,7 @@ cdef array_for_column(object dtype,
             out_array,
             size,
             ts_ixs,
+            asof_dates,
             asof_ixs,
             sids,
             sid_column_ixs,
@@ -511,6 +539,7 @@ cdef array_for_column(object dtype,
             out_array.view('uint8'),
             size,
             ts_ixs,
+            asof_dates,
             asof_ixs,
             sids,
             sid_column_ixs,
@@ -573,6 +602,14 @@ cdef arrays_from_rows(DatetimeIndex_t dates,
             out_shape,
             size,
             ts_ixs,
+            (
+                all_rows[AD_FIELD_NAME].values.view('int64')
+                if len(all_rows) else
+                # workaround for empty data frames which often lost type
+                # information; enforce than an empty column as an int64 type
+                # instead of object type
+                np.array([], dtype='int64')
+            ),
             asof_ixs,
             sids,
             column_ixs,
