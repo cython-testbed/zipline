@@ -177,7 +177,6 @@ cdef _array_for_column_impl(object dtype,
                             np.ndarray[np.int64_t] asof_ixs,
                             np.ndarray[np.int64_t] sids,
                             dict column_ixs,
-                            object mask,
                             np.ndarray[column_type] input_array,
                             column_type missing_value,
                             bint is_missing(column_type, column_type),
@@ -352,24 +351,11 @@ cdef _array_for_column_impl(object dtype,
                 # upper bound doesn't include the timestamp because we've
                 # already included the timestamp-date in the baseline.
                 end = max(ts_ix - 1, 0)
-                if end >= asof_ix and out_array[asof_ix, column_ix] != value:
-                    # The first condition ensures that the adjustment spans at
+                if end >= asof_ix:
+                    # The above condition ensures that the adjustment spans at
                     # least one trading day, meaning it has an effect on the
                     # displayed data. We cannot construct adjustments where end
                     # < start so we can just skip these rows.
-                    #
-                    # The second condition checks that the overwrite will
-                    # actually write a new value. We often have rows in our raw
-                    # data which create adjustments where the value does not
-                    # change. It is much faster to avoid creating and applying
-                    # the adjustment than to emit a nop adjustment. This
-                    # optimization is unsafe. If we get two adjustments for the
-                    # given index where the first adjustment changes the value
-                    # and the second adjustment resets the value to the
-                    # original baseline value, we will not emit the second
-                    # adjustment. This case is sufficiently rare that we have
-                    # chosen to ignore it in favor of the performance
-                    # improvement.
                     adjustment_list.append(
                         make_adjustment_from_indices_fused[column_type](
                             asof_ix,
@@ -404,7 +390,7 @@ cdef _array_for_column_impl(object dtype,
             # of v1. However, if we look back from t6, we should see v0 for the
             # period from t0 to t1.
             end = max(non_null_ad_ixs[ix] - 1, 0)
-            if end >= asof_ix and out_array[asof_ix, column_ix] != value:
+            if end >= asof_ix:
                 # see comment above about why we are not emitting some of
                 # these adjustments
                 adjustment_list.append(
@@ -435,13 +421,14 @@ cdef _array_for_column_impl(object dtype,
             sort=False,
         )
     else:
-        # this cast prevents a compiler crash
-        baseline_array = <object> out_array
+        # View the baseline array as the correct dtype. We work with
+        # datetime64[ns] and bool as integers but need to return them as the
+        # actual type.
+        baseline_array = out_array.view(dtype)
 
     if AsArrayKind is AsAdjustedArray:
         return AdjustedArray(
             baseline_array,
-            mask,
             adjustments,
             missing_value,
         )
@@ -457,7 +444,6 @@ cdef array_for_column(object dtype,
                       np.ndarray[np.int64_t] asof_ixs,
                       np.ndarray[np.int64_t] sids,
                       dict sid_column_ixs,
-                      object mask,
                       np.ndarray input_array,
                       object missing_value,
                       AsArrayKind array_kind):
@@ -478,7 +464,6 @@ cdef array_for_column(object dtype,
             asof_ixs,
             sids,
             sid_column_ixs,
-            mask,
             input_array,
             missing_value,
             is_missing_value[np.int64_t],
@@ -494,7 +479,6 @@ cdef array_for_column(object dtype,
             asof_ixs,
             sids,
             sid_column_ixs,
-            mask,
             input_array.view('int64'),
             missing_value.view('int64'),
             is_missing_value[np.int64_t],
@@ -510,7 +494,6 @@ cdef array_for_column(object dtype,
             asof_ixs,
             sids,
             sid_column_ixs,
-            mask,
             input_array,
             missing_value,
             is_missing_value[np.float64_t],
@@ -527,7 +510,6 @@ cdef array_for_column(object dtype,
             asof_ixs,
             sids,
             sid_column_ixs,
-            mask,
             input_array,
             missing_value,
             is_missing_value[object],
@@ -543,7 +525,6 @@ cdef array_for_column(object dtype,
             asof_ixs,
             sids,
             sid_column_ixs,
-            mask,
             input_array.view('uint8'),
             int(missing_value),
             is_missing_value[np.uint8_t],
@@ -565,7 +546,6 @@ cdef arrays_from_rows(DatetimeIndex_t dates,
                       object data_query_tz,
                       object assets,
                       np.ndarray[np.int64_t] sids,
-                      object mask,
                       list columns,
                       object all_rows,
                       AsArrayKind array_kind):
@@ -613,7 +593,6 @@ cdef arrays_from_rows(DatetimeIndex_t dates,
             asof_ixs,
             sids,
             column_ixs,
-            mask,
             all_rows[getname(column)].values.astype(column.dtype),
             column.missing_value,
             array_kind,
@@ -626,7 +605,6 @@ cdef arrays_from_rows_with_assets(DatetimeIndex_t dates,
                                   object data_query_time,
                                   object data_query_tz,
                                   object assets,
-                                  object mask,
                                   list columns,
                                   object all_rows,
                                   AsArrayKind array_kind):
@@ -636,7 +614,6 @@ cdef arrays_from_rows_with_assets(DatetimeIndex_t dates,
         data_query_tz,
         assets,
         all_rows[SID_FIELD_NAME].values.astype('int64'),
-        mask,
         columns,
         all_rows,
         array_kind,
@@ -646,7 +623,6 @@ cdef arrays_from_rows_with_assets(DatetimeIndex_t dates,
 cdef arrays_from_rows_without_assets(DatetimeIndex_t dates,
                                      object data_query_time,
                                      object data_query_tz,
-                                     object mask,
                                      list columns,
                                      object all_rows,
                                      AsArrayKind array_kind):
@@ -666,7 +642,6 @@ cdef arrays_from_rows_without_assets(DatetimeIndex_t dates,
             (0,),
             'C',
         ),
-        mask,
         columns,
         all_rows,
         array_kind,
@@ -677,7 +652,6 @@ cpdef adjusted_arrays_from_rows_with_assets(DatetimeIndex_t dates,
                                             object data_query_time,
                                             object data_query_tz,
                                             object assets,
-                                            object mask,
                                             list columns,
                                             object all_rows):
     """Construct the adjusted array objects from the input rows.
@@ -693,8 +667,6 @@ cpdef adjusted_arrays_from_rows_with_assets(DatetimeIndex_t dates,
         The timezone for the data_query_time.
     assets : iterable[int]
         The assets in the order requested.
-    mask : np.ndarray[bool]
-        The mask provided by the pipeline engine.
     columns : list[BoundColumn]
         The columns being loaded.
     all_rows : pd.DataFrame
@@ -711,7 +683,6 @@ cpdef adjusted_arrays_from_rows_with_assets(DatetimeIndex_t dates,
         data_query_time,
         data_query_tz,
         assets,
-        mask,
         columns,
         all_rows,
         AsAdjustedArray(),
@@ -721,7 +692,6 @@ cpdef adjusted_arrays_from_rows_with_assets(DatetimeIndex_t dates,
 cpdef adjusted_arrays_from_rows_without_assets(DatetimeIndex_t dates,
                                                object data_query_time,
                                                object data_query_tz,
-                                               object mask,
                                                list columns,
                                                object all_rows):
     """Construct the adjusted array objects from the input rows.
@@ -735,8 +705,6 @@ cpdef adjusted_arrays_from_rows_without_assets(DatetimeIndex_t dates,
         midnight UTC will be used.
     data_query_tz : pytz.Timezone or None
         The timezone for the data_query_time.
-    mask : np.ndarray[bool]
-        The mask provided by the pipeline engine.
     columns : list[BoundColumn]
         The columns being loaded.
     all_rows : pd.DataFrame
@@ -752,7 +720,6 @@ cpdef adjusted_arrays_from_rows_without_assets(DatetimeIndex_t dates,
         dates,
         data_query_time,
         data_query_tz,
-        mask,
         columns,
         all_rows,
         AsAdjustedArray(),
@@ -794,7 +761,6 @@ cpdef baseline_arrays_from_rows_with_assets(DatetimeIndex_t dates,
         data_query_time,
         data_query_tz,
         assets,
-        None,
         columns,
         all_rows,
         AsBaselineArray(),
@@ -832,7 +798,6 @@ cpdef baseline_arrays_from_rows_without_assets(DatetimeIndex_t dates,
         dates,
         data_query_time,
         data_query_tz,
-        None,
         columns,
         all_rows,
         AsBaselineArray(),
