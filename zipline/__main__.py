@@ -7,10 +7,7 @@ import pandas as pd
 from six import text_type
 
 from zipline.data import bundles as bundles_module
-from zipline.utils.calendars.calendar_utils import (
-    get_calendar,
-    default_calendar_names
-)
+from zipline.utils.calendars.calendar_utils import get_calendar
 from zipline.utils.compat import wraps
 from zipline.utils.cli import Date, Timestamp
 from zipline.utils.run_algo import _run, load_extensions
@@ -142,7 +139,7 @@ def ipython_only(option):
 @click.option(
     '-b',
     '--bundle',
-    default='quantopian-quandl',
+    default='quandl',
     metavar='BUNDLE-NAME',
     show_default=True,
     help='The data bundle to use for the simulation.',
@@ -179,7 +176,6 @@ def ipython_only(option):
 @click.option(
     '--trading-calendar',
     metavar='TRADING-CALENDAR',
-    type=click.Choice(default_calendar_names),
     default='NYSE',
     help="The calendar you want to use e.g. LSE. NYSE is the default."
 )
@@ -300,7 +296,7 @@ def zipline_magic(line, cell=None):
 @click.option(
     '-b',
     '--bundle',
-    default='quantopian-quandl',
+    default='quandl',
     metavar='BUNDLE-NAME',
     show_default=True,
     help='The data bundle to ingest.',
@@ -332,7 +328,7 @@ def ingest(bundle, assets_version, show_progress):
 @click.option(
     '-b',
     '--bundle',
-    default='quantopian-quandl',
+    default='quandl',
     metavar='BUNDLE-NAME',
     show_default=True,
     help='The data bundle to clean.',
