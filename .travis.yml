@@ -59,7 +59,7 @@ install:
   - pip install -r etc/requirements_dev.txt --cache-dir=$CACHE_DIR
   - pip install -r etc/requirements_blaze.txt --cache-dir=$CACHE_DIR  # this uses git requirements right now
   - pip install -r etc/requirements_talib.txt --cache-dir=$CACHE_DIR
-  - pip install --install-option="--no-cython-compile" https://github.com/cython/cython/archive/449a48ecd5b131ff37636accc48ec57e94e1c56e.zip
+  - pip install --install-option="--no-cython-compile" https://github.com/cython/cython/archive/ffa1a1989157550ed7763b8668f357854c1283b3.zip
   - pip install -e .[all] --cache-dir=$CACHE_DIR
 before_script:
   - pip freeze | sort
