@@ -4,9 +4,10 @@ Tests for Factor terms.
 from functools import partial
 from itertools import product
 from nose_parameterized import parameterized
-from unittest import TestCase
+from unittest import TestCase, skipIf
 
 from toolz import compose
+import numpy as np
 from numpy import (
     apply_along_axis,
     arange,
@@ -35,6 +36,7 @@ from zipline.pipeline.factors import (
     DailyReturns,
     Returns,
 )
+from zipline.pipeline.factors.factor import winsorize as zp_winsorize
 from zipline.testing import (
     check_allclose,
     check_arrays,
@@ -54,6 +56,7 @@ from zipline.utils.numpy_utils import (
     NaTns,
 )
 from zipline.utils.math_utils import nanmean, nanstd
+from zipline.utils.pandas_utils import new_pandas, skip_pipeline_new_pandas
 
 from .base import BasePipelineTestCase
 
@@ -93,6 +96,39 @@ for_each_factor_dtype = parameterized.expand([
     ('datetime64[ns]', datetime64ns_dtype),
     ('float', float64_dtype),
 ])
+
+
+def scipy_winsorize_with_nan_handling(array, limits):
+    """
+    Wrapper around scipy.stats.mstats.winsorize that handles NaNs correctly.
+
+    scipy's winsorize sorts NaNs to the end of the array when calculating
+    percentiles.
+    """
+    # The basic idea of this function is to do the following:
+    # 1. Sort the input, sorting nans to the end of the array.
+    # 2. Call scipy winsorize on the non-nan portion of the input.
+    # 3. Undo the sorting to put the winsorized values back in their original
+    #    locations.
+
+    nancount = np.isnan(array).sum()
+    if nancount == len(array):
+        return array.copy()
+
+    sorter = array.argsort()
+    unsorter = sorter.argsort()  # argsorting a permutation gives its inverse!
+
+    if nancount:
+        sorted_non_nans = array[sorter][:-nancount]
+    else:
+        sorted_non_nans = array[sorter]
+
+    sorted_winsorized = np.hstack([
+        scipy_winsorize(sorted_non_nans, limits).data,
+        np.full(nancount, np.nan),
+    ])
+
+    return sorted_winsorized[unsorter]
 
 
 class FactorTestCase(BasePipelineTestCase):
@@ -698,20 +734,26 @@ class FactorTestCase(BasePipelineTestCase):
         str_c = C(dtype=categorical_dtype, missing_value=None)
 
         factor_data = array([
-            [1.,     2.,  3.,  4.,   5.,   6.],
-            [1.,     8., 27., 64., 125., 216.],
-            [6.,     5.,  4.,  3.,   2.,   1.]
+            [1.,     2.,  3.,  4.,   5.,   6.,  7.,  8.,  9.],
+            [1.,     2.,  3.,  4.,   5.,   6., nan, nan, nan],
+            [1.,     8., 27., 64., 125., 216., nan, nan, nan],
+            [6.,     5.,  4.,  3.,   2.,   1., nan, nan, nan],
+            [nan,   nan, nan, nan,  nan,  nan, nan, nan, nan],
         ])
         filter_data = array(
-            [[False, True, True, True, True, True],
-             [True, False, True, True, True, True],
-             [True, True, False, True, True, True]],
+            [[1, 1, 1, 1, 1, 1, 1, 1, 1],
+             [0, 1, 1, 1, 1, 1, 1, 1, 1],
+             [1, 0, 1, 1, 1, 1, 1, 1, 1],
+             [1, 1, 0, 1, 1, 1, 1, 1, 1],
+             [1, 1, 1, 0, 1, 1, 1, 1, 1]],
             dtype=bool,
         )
         classifier_data = array(
-            [[1, 1, 1, 2, 2, 2],
-             [1, 1, 1, 2, 2, 2],
-             [1, 1, 1, 2, 2, 2]],
+            [[1, 1, 1, 2, 2, 2, 1, 1, 1],
+             [1, 1, 1, 2, 2, 2, 1, 1, 1],
+             [1, 1, 1, 2, 2, 2, 1, 1, 1],
+             [1, 1, 1, 2, 2, 2, 1, 1, 1],
+             [1, 1, 1, 2, 2, 2, 1, 1, 1]],
             dtype=int64_dtype,
         )
         string_classifier_data = LabelArray(
@@ -762,34 +804,47 @@ class FactorTestCase(BasePipelineTestCase):
         }
         expected = {
             'winsor_1': array([
-                [2.,    2.,    3.,    4.,    5.,    5.],
-                [8.,    8.,   27.,   64.,  125.,  125.],
-                [5.,    5.,    4.,    3.,    2.,    2.]
+                [3.,    3.,    3.,    4.,    5.,    6.,  7.,  7.,  7.],
+                [2.,    2.,    3.,    4.,    5.,    5., nan, nan, nan],
+                [8.,    8.,   27.,   64.,  125.,  125., nan, nan, nan],
+                [5.,    5.,    4.,    3.,    2.,    2., nan, nan, nan],
+                [nan,  nan,   nan,   nan,   nan,   nan, nan, nan, nan],
             ]),
             'winsor_2': array([
-                [3.0,    3.,    3.,    4.,    5.,    6.],
-                [27.,   27.,   27.,   64.,  125.,  216.],
-                [6.0,    5.,    4.,    3.,    3.,    3.]
+                [5.,     5.,    5.,    5.,    5.,    6.,  7.,  8.,  9.],
+                [3.0,    3.,    3.,    4.,    5.,    6., nan, nan, nan],
+                [27.,   27.,   27.,   64.,  125.,  216., nan, nan, nan],
+                [6.0,    5.,    4.,    3.,    3.,    3., nan, nan, nan],
+                [nan,   nan,   nan,   nan,   nan,   nan, nan, nan, nan],
             ]),
             'winsor_3': array([
-                [1.,    2.,    3.,    4.,    5.,    5.],
-                [1.,    8.,   27.,   64.,  125.,  125.],
-                [5.,    5.,    4.,    3.,    2.,    1.]
+                [1.,    2.,    3.,    4.,    5.,    6.,  7.,  7.,  7.],
+                [1.,    2.,    3.,    4.,    5.,    5., nan, nan, nan],
+                [1.,    8.,   27.,   64.,  125.,  125., nan, nan, nan],
+                [5.,    5.,    4.,    3.,    2.,    1., nan, nan, nan],
+                [nan,  nan,   nan,   nan,   nan,   nan, nan, nan, nan],
             ]),
             'masked': array([
-                [nan,    3.,    3.,    4.,    5.,    5.],
-                [27.,   nan,   27.,   64.,  125.,  125.],
-                [5.0,    5.,    nan,    3.,    2.,   2.]
+                # no mask on first row
+                [3.,     3.,    3.,    4.,    5.,    6.,  7.,  7.,  7.],
+                [nan,    3.,    3.,    4.,    5.,    5., nan, nan, nan],
+                [27.,   nan,   27.,   64.,  125.,  125., nan, nan, nan],
+                [5.0,    5.,    nan,   3.,    2.,    2., nan, nan, nan],
+                [nan,   nan,   nan,   nan,   nan,   nan, nan, nan, nan],
             ]),
             'grouped': array([
-                [2.,    2.,    2.,    5.,    5.,    5.],
-                [8.,    8.,    8.,  125.,  125.,  125.],
-                [5.,    5.,    5.,    2.,    2.,    2.]
+                [3.,    3.,    3.,    5.,    5.,    5.,  7.,  7.,  7.],
+                [2.,    2.,    2.,    5.,    5.,    5., nan, nan, nan],
+                [8.,    8.,    8.,  125.,  125.,  125., nan, nan, nan],
+                [5.,    5.,    5.,    2.,    2.,    2., nan, nan, nan],
+                [nan,  nan,   nan,   nan,   nan,   nan, nan, nan, nan],
             ]),
             'grouped_masked': array([
-                [nan,    2.,    3.,    5.,    5.,    5.],
-                [1.0,   nan,   27.,  125.,  125.,  125.],
-                [6.0,    5.,    nan,    2.,    2.,   2.]
+                [3.,     3.,    3.,    5.,    5.,    5.,  7.,  7.,  7.],
+                [nan,    2.,    3.,    5.,    5.,    5., nan, nan, nan],
+                [1.0,   nan,   27.,  125.,  125.,  125., nan, nan, nan],
+                [6.0,    5.,   nan,    2.,    2.,    2., nan, nan, nan],
+                [nan,   nan,   nan,   nan,   nan,   nan, nan, nan, nan],
             ]),
         }
         # Changing the classifier dtype shouldn't affect anything.
@@ -809,6 +864,74 @@ class FactorTestCase(BasePipelineTestCase):
             check=partial(check_allclose, atol=0.001),
         )
 
+    def test_winsorize_no_nans(self):
+        data = array([0., 1., 2., 3., 4., 5., 6., 7., 8., 9.])
+        permutation = array([2, 1, 6, 8, 7, 5, 3, 9, 4, 0])
+
+        for perm in slice(None), permutation:
+            # Winsorize both tails at 90%.
+            result = zp_winsorize(data[perm], 0.1, 0.9)
+            expected = array([1., 1., 2., 3., 4., 5., 6., 7., 8., 8.])[perm]
+            assert_equal(result, expected)
+
+            # Winsorize both tails at 80%.
+            result = zp_winsorize(data[perm], 0.2, 0.8)
+            expected = array([2., 2., 2., 3., 4., 5., 6., 7., 7., 7.])[perm]
+            assert_equal(result, expected)
+
+            # Winsorize just the upper tail.
+            result = zp_winsorize(data[perm], 0.0, 0.8)
+            expected = array([0., 1., 2., 3., 4., 5., 6., 7., 7., 7.])[perm]
+            assert_equal(result, expected)
+
+            # Winsorize just the lower tail.
+            result = zp_winsorize(data[perm], 0.2, 1.0)
+            expected = array([2., 2., 2., 3., 4., 5., 6., 7., 8., 9.])[perm]
+            assert_equal(result, expected)
+
+            # Don't winsorize.
+            result = zp_winsorize(data[perm], 0.0, 1.0)
+            expected = array([0., 1., 2., 3., 4., 5., 6., 7., 8., 9.])[perm]
+            assert_equal(result, expected)
+
+    def test_winsorize_nans(self):
+        # 5 low non-nan values, then some nans, then 5 high non-nans.
+        data = array([4.0, 3.0, 0.0, 1.0, 2.0,
+                      nan, nan, nan,
+                      9.0, 5.0, 6.0, 8.0, 7.0])
+
+        # Winsorize both tails at 10%.
+        # 0.0 -> 1.0
+        # 9.0 -> 8.0
+        result = zp_winsorize(data, 0.10, 0.90)
+        expected = array([4.0, 3.0, 1.0, 1.0, 2.0,
+                          nan, nan, nan,
+                          8.0, 5.0, 6.0, 8.0, 7.0])
+        assert_equal(result, expected)
+
+        # Winsorize both tails at 20%.
+        # 0.0 and 1.0 -> 2.0
+        # 9.0 and 8.0 -> 7.0
+        result = zp_winsorize(data, 0.20, 0.80)
+        expected = array([4.0, 3.0, 2.0, 2.0, 2.0,
+                          nan, nan, nan,
+                          7.0, 5.0, 6.0, 7.0, 7.0])
+        assert_equal(result, expected)
+
+        # Winsorize just the upper tail.
+        result = zp_winsorize(data, 0, 0.8)
+        expected = array([4.0, 3.0, 0.0, 1.0, 2.0,
+                          nan, nan, nan,
+                          7.0, 5.0, 6.0, 7.0, 7.0])
+        assert_equal(result, expected)
+
+        # Winsorize just the lower tail.
+        result = zp_winsorize(data, 0.2, 1.0)
+        expected = array([4.0, 3.0, 2.0, 2.0, 2.0,
+                          nan, nan, nan,
+                          9.0, 5.0, 6.0, 8.0, 7.0])
+        assert_equal(result, expected)
+
     def test_winsorize_bad_bounds(self):
         """
         Test out of bounds input for factor.winsorize.
@@ -826,15 +949,16 @@ class FactorTestCase(BasePipelineTestCase):
             with self.assertRaises(BadPercentileBounds):
                 f.winsorize(min_percentile=min_, max_percentile=max_)
 
+    @skipIf(new_pandas, skip_pipeline_new_pandas)
     @parameter_space(
-        seed_value=range(1, 2),
+        seed_value=[1, 2],
         normalizer_name_and_func=[
             ('demean', {}, lambda row: row - nanmean(row)),
             ('zscore', {}, lambda row: (row - nanmean(row)) / nanstd(row)),
             (
                 'winsorize',
                 {"min_percentile": 0.25, "max_percentile": 0.75},
-                lambda row: scipy_winsorize(
+                lambda row: scipy_winsorize_with_nan_handling(
                     row,
                     limits=0.25,
                 )
@@ -1163,21 +1287,21 @@ class FactorTestCase(BasePipelineTestCase):
         self.assertIsNot(f.deciles(), f.deciles(mask=m))
 
 
-class ShortReprTestCase(TestCase):
+class ReprTestCase(TestCase):
     """
-    Tests for short_repr methods of Factors.
+    Tests for term reprs.
     """
 
     def test_demean(self):
-        r = F().demean().short_repr()
+        r = F().demean().graph_repr()
         self.assertEqual(r, "GroupedRowTransform('demean')")
 
     def test_zscore(self):
-        r = F().zscore().short_repr()
+        r = F().zscore().graph_repr()
         self.assertEqual(r, "GroupedRowTransform('zscore')")
 
     def test_winsorize(self):
-        r = F().winsorize(min_percentile=.05, max_percentile=.95).short_repr()
+        r = F().winsorize(min_percentile=.05, max_percentile=.95).graph_repr()
         self.assertEqual(r, "GroupedRowTransform('winsorize')")
 
     def test_recarray_field_repr(self):
@@ -1186,14 +1310,14 @@ class ShortReprTestCase(TestCase):
             inputs = ()
             window_length = 5
 
-            def short_repr(self):
+            def graph_repr(self):
                 return "CustomRepr()"
 
         a = MultipleOutputs().a
         b = MultipleOutputs().b
 
-        self.assertEqual(a.short_repr(), "CustomRepr().a")
-        self.assertEqual(b.short_repr(), "CustomRepr().b")
+        self.assertEqual(a.graph_repr(), "CustomRepr().a")
+        self.assertEqual(b.graph_repr(), "CustomRepr().b")
 
     def test_latest_repr(self):
 
@@ -1202,13 +1326,31 @@ class ShortReprTestCase(TestCase):
             b = Column(dtype=float64_dtype)
 
         self.assertEqual(
-            SomeDataSet.a.latest.short_repr(),
-            "SomeDataSet.a.latest"
+            SomeDataSet.a.latest.graph_repr(),
+            "Latest"
         )
         self.assertEqual(
-            SomeDataSet.b.latest.short_repr(),
-            "SomeDataSet.b.latest"
+            SomeDataSet.b.latest.graph_repr(),
+            "Latest"
         )
+
+    def test_recursive_repr(self):
+
+        class DS(DataSet):
+            a = Column(dtype=float64_dtype)
+            b = Column(dtype=float64_dtype)
+
+        class Input(CustomFactor):
+            inputs = ()
+            window_safe = True
+
+        class HasInputs(CustomFactor):
+            inputs = [Input(window_length=3), DS.a, DS.b]
+            window_length = 3
+
+        result = repr(HasInputs())
+        expected = "HasInputs([Input(...), DS.a, DS.b], 3)"
+        self.assertEqual(result, expected)
 
 
 class TestWindowSafety(TestCase):

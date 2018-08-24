@@ -41,6 +41,7 @@ from pandas.util.testing import (
     assert_index_equal,
 )
 from six import iteritems, viewkeys, PY2
+from six.moves import zip_longest
 from toolz import dissoc, keyfilter
 import toolz.curried.operator as op
 
@@ -313,6 +314,36 @@ def assert_raises_str(exc, expected_str, msg=''):
     return assert_raises_regex(exc, '^%s$' % re.escape(expected_str), msg=msg)
 
 
+def make_assert_equal_assertion_error(assertion_message, path, msg):
+    """Create an assertion error formatted for use in ``assert_equal``.
+
+    Parameters
+    ----------
+    assertion_message : str
+        The concrete reason for the failure.
+    path : tuple[str]
+        The path leading up to the failure.
+    msg : str
+        The user supplied message.
+
+    Returns
+    -------
+    exception_instance : AssertionError
+        The new exception instance.
+
+    Notes
+    -----
+    This doesn't raise the exception, it only returns it.
+    """
+    return AssertionError(
+        '%s%s\n%s' % (
+            _fmt_msg(msg),
+            assertion_message,
+            _fmt_path(path),
+        ),
+    )
+
+
 @dispatch(object, object)
 def assert_equal(result, expected, path=(), msg='', **kwargs):
     """Assert that two objects are equal using the ``==`` operator.
@@ -329,12 +360,12 @@ def assert_equal(result, expected, path=(), msg='', **kwargs):
     AssertionError
         Raised when ``result`` is not equal to ``expected``.
     """
-    assert result == expected, '%s%s != %s\n%s' % (
-        _fmt_msg(msg),
-        result,
-        expected,
-        _fmt_path(path),
-    )
+    if result != expected:
+        raise make_assert_equal_assertion_error(
+            '%s != %s' % (result, expected),
+            path,
+            msg,
+        )
 
 
 @assert_equal.register(float, float)
@@ -682,6 +713,36 @@ def assert_isidentical(result, expected, msg=''):
     assert result.isidentical(expected), (
         '%s%s is not identical to %s' % (_fmt_msg(msg), result, expected)
     )
+
+
+def assert_messages_equal(result, expected):
+    """Assertion helper for comparing very long strings (e.g. error messages).
+    """
+    # The arg here is "keepends" which keeps trailing newlines (which
+    # matters for checking trailing whitespace). You can't pass keepends by
+    # name :(.
+    left_lines = result.splitlines(True)
+    right_lines = expected.splitlines(True)
+    iter_lines = enumerate(zip_longest(left_lines, right_lines))
+    for line, (ll, rl) in iter_lines:
+        if ll != rl:
+            col = index_of_first_difference(ll, rl)
+            raise AssertionError(
+                "Messages differ on line {line}, col {col}:"
+                "\n{ll!r}\n!=\n{rl!r}".format(
+                    line=line, col=col, ll=ll, rl=rl
+                )
+            )
+
+
+def index_of_first_difference(left, right):
+    """Get the index of the first difference between two strings."""
+    difflocs = (i for (i, (lc, rc)) in enumerate(zip_longest(left, right))
+                if lc != rc)
+    try:
+        return next(difflocs)
+    except StopIteration:
+        raise ValueError("Left was equal to right!")
 
 
 try:
