@@ -43,6 +43,7 @@ from zipline.assets import (
     AssetDBWriter,
     AssetFinder,
 )
+from zipline.assets.assets import OwnershipPeriod
 from zipline.assets.synthetic import (
     make_commodity_future_info,
     make_rotating_equity_info,
@@ -88,6 +89,7 @@ from zipline.testing.fixtures import (
     ZiplineTestCase,
     WithTradingCalendars,
     WithTmpDir,
+    WithInstanceTmpDir,
 )
 from zipline.utils.range import range
 
@@ -741,8 +743,7 @@ class AssetFinderTestCase(WithTradingCalendars, ZiplineTestCase):
         with self.assertRaises(ValueError) as e:
             self.write_assets(equities=df)
 
-        self.assertEqual(
-            str(e.exception),
+        expected_error_msg = (
             "Ambiguous ownership for 1 symbol, multiple assets held the"
             " following symbols:\n"
             "MULTIPLE (??):\n"
@@ -754,6 +755,7 @@ class AssetFinderTestCase(WithTradingCalendars, ZiplineTestCase):
             "  2   2010-01-01 2013-01-01\n"
             "  3   2011-01-01 2012-01-01"
         )
+        self.assertEqual(str(e.exception), expected_error_msg)
 
     def test_lookup_generic(self):
         """
@@ -2286,3 +2288,138 @@ class TestExchangeInfo(ZiplineTestCase):
                 exchange_names[asset.sid]
             ]
             assert_equal(asset.exchange_info, expected_exchange_info)
+
+
+class TestWrite(WithInstanceTmpDir, ZiplineTestCase):
+    def init_instance_fixtures(self):
+        super(TestWrite, self).init_instance_fixtures()
+        self.assets_db_path = path = os.path.join(
+            self.instance_tmpdir.path,
+            'assets.db',
+        )
+        self.writer = AssetDBWriter(path)
+
+    def new_asset_finder(self):
+        return AssetFinder(self.assets_db_path)
+
+    def test_write_multiple_exchanges(self):
+        # Incrementing by two so that start and end dates for each
+        # generated Asset don't overlap (each Asset's end_date is the
+        # day after its start date).
+        dates = pd.date_range('2013-01-01', freq='2D', periods=5, tz='UTC')
+        sids = list(range(5))
+        df = pd.DataFrame.from_records(
+            [
+                {
+                    'sid': sid,
+                    'symbol':  str(sid),
+                    'start_date': date.value,
+                    'end_date': (date + timedelta(days=1)).value,
+
+                    # Change the exchange with each mapping period. We don't
+                    # currently support point in time exchange information,
+                    # so we just take the most recent by end date.
+                    'exchange': 'EXCHANGE-%d-%d' % (sid, n),
+                }
+                for n, date in enumerate(dates)
+                for sid in sids
+            ]
+        )
+        self.writer.write(equities=df)
+
+        reader = self.new_asset_finder()
+        equities = reader.retrieve_all(reader.sids)
+
+        for eq in equities:
+            expected_exchange = 'EXCHANGE-%d-%d' % (eq.sid, len(dates) - 1)
+            assert_equal(eq.exchange, expected_exchange)
+
+    def test_write_direct(self):
+        # don't include anything with a default to test that those work.
+        equities = pd.DataFrame({
+            'sid': [0, 1],
+            'asset_name': ['Ayy Inc.', 'Lmao LP'],
+            # the full exchange name
+            'exchange': ['NYSE', 'TSE'],
+        })
+        equity_symbol_mappings = pd.DataFrame({
+            'sid': [0, 1],
+            'symbol': ['AYY', 'LMAO'],
+            'company_symbol':  ['AYY', 'LMAO'],
+            'share_class_symbol': ['', ''],
+        })
+        equity_supplementary_mappings = pd.DataFrame({
+            'sid': [0, 1],
+            'field': ['QSIP', 'QSIP'],
+            'value': [str(hash(s)) for s in ['AYY', 'LMAO']],
+        })
+        exchanges = pd.DataFrame({
+            'exchange': ['NYSE', 'TSE'],
+            'country_code': ['US', 'JP'],
+        })
+
+        self.writer.write_direct(
+            equities=equities,
+            equity_symbol_mappings=equity_symbol_mappings,
+            equity_supplementary_mappings=equity_supplementary_mappings,
+            exchanges=exchanges,
+        )
+
+        reader = self.new_asset_finder()
+
+        equities = reader.retrieve_all(reader.sids)
+        expected_equities = [
+            Equity(
+                0,
+                ExchangeInfo('NYSE', 'NYSE', 'US'),
+                symbol='AYY',
+                asset_name='Ayy Inc.',
+                start_date=pd.Timestamp(0, tz='UTC'),
+                end_date=pd.Timestamp.max.tz_localize('UTC'),
+                first_traded=None,
+                auto_close_date=None,
+                tick_size=0.01,
+                multiplier=1.0,
+            ),
+            Equity(
+                1,
+                ExchangeInfo('TSE', 'TSE', 'JP'),
+                symbol='LMAO',
+                asset_name='Lmao LP',
+                start_date=pd.Timestamp(0, tz='UTC'),
+                end_date=pd.Timestamp.max.tz_localize('UTC'),
+                first_traded=None,
+                auto_close_date=None,
+                tick_size=0.01,
+                multiplier=1.0,
+            )
+        ]
+        assert_equal(equities, expected_equities)
+
+        exchange_info = reader.exchange_info
+        expected_exchange_info = {
+            'NYSE': ExchangeInfo('NYSE', 'NYSE', 'US'),
+            'TSE': ExchangeInfo('TSE', 'TSE', 'JP'),
+        }
+        assert_equal(exchange_info, expected_exchange_info)
+
+        supplementary_map = reader.equity_supplementary_map
+        expected_supplementary_map = {
+            ('QSIP', str(hash('AYY'))): (
+                OwnershipPeriod(
+                    start=pd.Timestamp(0, tz='UTC'),
+                    end=pd.Timestamp.max.tz_localize('UTC'),
+                    sid=0,
+                    value=str(hash('AYY')),
+                ),
+            ),
+            ('QSIP', str(hash('LMAO'))): (
+                OwnershipPeriod(
+                    start=pd.Timestamp(0, tz='UTC'),
+                    end=pd.Timestamp.max.tz_localize('UTC'),
+                    sid=1,
+                    value=str(hash('LMAO')),
+                ),
+            ),
+        }
+        assert_equal(supplementary_map, expected_supplementary_map)
